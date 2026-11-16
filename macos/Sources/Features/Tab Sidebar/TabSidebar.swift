@@ -82,14 +82,19 @@ class TabSidebarModel: ObservableObject {
     @Published private(set) var collapsed: Set<String> = TabSidebarModel.collapsed
     @Published var query: String = ""
 
-    /// Drag and drop reordering state.
-    struct DropTarget: Equatable {
+    /// An ongoing drag of a tab card. `frames` are the other cards' frames when the drag
+    /// started; measuring against them instead of the live layout keeps the preview from
+    /// feeding back into itself while rows move.
+    struct DragState: Equatable {
         let id: ObjectIdentifier
-        let after: Bool
+        let frames: [ObjectIdentifier: CGRect]
+        var insertBefore: ObjectIdentifier?
     }
 
-    var draggingID: ObjectIdentifier?
-    @Published var dropTarget: DropTarget?
+    @Published private(set) var drag: DragState?
+
+    /// The latest card frames in the list's coordinate space, reported by the cards.
+    var cardFrames: [ObjectIdentifier: CGRect] = [:]
 
     /// Visibility and width live in their own object so that the terminal next to the
     /// sidebar only re-renders when those change, not on every tab update.
@@ -183,7 +188,59 @@ class TabSidebarModel: ObservableObject {
     // MARK: Sections
 
     var filteredTabs: [TabInfo] {
-        tabs.filter { $0.matches(query) }
+        previewTabs.filter { $0.matches(query) }
+    }
+
+    /// The tab order, with the dragged tab already moved to where it would land.
+    private var previewTabs: [TabInfo] {
+        guard let drag, let moving = tabs.first(where: { $0.id == drag.id }) else { return tabs }
+        var rest = tabs.filter { $0.id != drag.id }
+        let index = drag.insertBefore.flatMap { before in rest.firstIndex { $0.id == before } } ?? rest.count
+        rest.insert(moving, at: index)
+        return rest
+    }
+
+    // MARK: Dragging
+
+    /// The tab that currently follows the given one in the native order, or nil if it is last.
+    private func nextTabID(after id: ObjectIdentifier) -> ObjectIdentifier? {
+        guard let index = tabs.firstIndex(where: { $0.id == id }), index + 1 < tabs.count else { return nil }
+        return tabs[index + 1].id
+    }
+
+    /// Updates the preview while a card is dragged. `y` is in the list's coordinate
+    /// space; anywhere below the last card means the end of the list.
+    func dragChanged(_ id: ObjectIdentifier, y: CGFloat) {
+        if drag?.id != id {
+            drag = DragState(
+                id: id,
+                frames: cardFrames.filter { $0.key != id },
+                insertBefore: nextTabID(after: id))
+        }
+
+        guard var state = drag else { return }
+        let before = state.frames
+            .sorted { $0.value.minY < $1.value.minY }
+            .first { $0.value.midY > y }?
+            .key
+
+        guard before != state.insertBefore else { return }
+        state.insertBefore = before
+        withAnimation(.easeInOut(duration: 0.15)) {
+            drag = state
+        }
+    }
+
+    func dragEnded() {
+        guard let state = drag else { return }
+        drag = nil
+
+        guard state.insertBefore != nextTabID(after: state.id) else { return }
+        if let before = state.insertBefore {
+            move(state.id, to: before, after: false)
+        } else if let last = tabs.last(where: { $0.id != state.id }) {
+            move(state.id, to: last.id, after: true)
+        }
     }
 
     /// Tabs grouped by Linear project (or repository) and then by Linear issue.

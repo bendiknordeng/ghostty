@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Claude's brand orange, used for the Claude avatar and working indicator.
 private let claudeColor = Color(red: 0.85, green: 0.47, blue: 0.34)
@@ -9,6 +8,9 @@ private let treeIndent: CGFloat = 16
 
 struct TabSidebarView: View {
     @ObservedObject var model: TabSidebarModel
+
+    /// The coordinate space cards report their frames in and drags are measured in.
+    static let listSpace = "TabSidebarList"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +38,8 @@ struct TabSidebarView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
+                .coordinateSpace(name: Self.listSpace)
+                .onPreferenceChange(TabCardFramesKey.self) { model.cardFrames = $0 }
             }
         }
         .background(.regularMaterial)
@@ -262,9 +266,9 @@ private struct TabCard: View {
     var showsIssue: Bool = true
 
     @State private var isHovering = false
-    @State private var height: CGFloat = 0
 
     private var isSelected: Bool { model.selectedID == tab.id }
+    private var isDragged: Bool { model.drag?.id == tab.id }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -309,26 +313,20 @@ private struct TabCard: View {
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .background {
             GeometryReader { geometry in
-                Color.clear
-                    .onAppear { height = geometry.size.height }
-                    .onChange(of: geometry.size.height) { height = $0 }
+                Color.clear.preference(
+                    key: TabCardFramesKey.self,
+                    value: [tab.id: geometry.frame(in: .named(TabSidebarView.listSpace))])
             }
         }
-        .overlay(alignment: model.dropTarget?.after == true ? .bottom : .top) {
-            if model.dropTarget?.id == tab.id {
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(height: 2)
-                    .offset(y: model.dropTarget?.after == true ? 3 : -3)
-            }
-        }
+        .shadow(color: .black.opacity(isDragged ? 0.35 : 0), radius: 8, y: 3)
+        .scaleEffect(isDragged ? 1.02 : 1)
+        .zIndex(isDragged ? 1 : 0)
         .onTapGesture { model.select(tab.id) }
         .onHover { isHovering = $0 }
-        .onDrag {
-            model.draggingID = tab.id
-            return NSItemProvider(object: tab.title as NSString)
-        }
-        .onDrop(of: [UTType.plainText], delegate: TabDropDelegate(model: model, tab: tab, height: height))
+        .gesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .named(TabSidebarView.listSpace))
+                .onChanged { model.dragChanged(tab.id, y: $0.location.y) }
+                .onEnded { _ in model.dragEnded() })
         .contextMenu {
             if tab.issue?.url != nil {
                 Button("Open \(tab.issueKey ?? "Issue") in Linear") { model.openIssue(tab) }
@@ -443,41 +441,12 @@ private struct TabCard: View {
 
 }
 
-/// Reorders tabs by dropping a card on the upper or lower half of another card.
-private struct TabDropDelegate: DropDelegate {
-    let model: TabSidebarModel
-    let tab: TabInfo
-    let height: CGFloat
+/// Frames of the visible tab cards in the list's coordinate space, used for dragging.
+private struct TabCardFramesKey: PreferenceKey {
+    static var defaultValue: [ObjectIdentifier: CGRect] = [:]
 
-    private func isAfter(_ info: DropInfo) -> Bool {
-        info.location.y > height / 2
-    }
-
-    func validateDrop(info: DropInfo) -> Bool {
-        model.draggingID != nil && model.draggingID != tab.id
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        let target = TabSidebarModel.DropTarget(id: tab.id, after: isAfter(info))
-        if model.dropTarget != target {
-            model.dropTarget = target
-        }
-        return DropProposal(operation: .move)
-    }
-
-    func dropExited(info: DropInfo) {
-        if model.dropTarget?.id == tab.id {
-            model.dropTarget = nil
-        }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        let after = isAfter(info)
-        model.dropTarget = nil
-        guard let dragged = model.draggingID else { return false }
-        model.draggingID = nil
-        model.move(dragged, to: tab.id, after: after)
-        return true
+    static func reduce(value: inout [ObjectIdentifier: CGRect], nextValue: () -> [ObjectIdentifier: CGRect]) {
+        value.merge(nextValue()) { $1 }
     }
 }
 
