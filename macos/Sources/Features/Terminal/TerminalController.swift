@@ -46,6 +46,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// changes in the list.
     private var tabWindowsHash: Int = 0
 
+    /// The vertical tab sidebar shown next to the terminal.
+    let tabSidebar = TabSidebarModel()
+
     /// The initial window presentation is deferred by one runloop turn in a few places so
     /// AppKit can settle tab/window state first. Close actions must cancel it to avoid
     /// re-showing a tab/window that was already closed.
@@ -593,6 +596,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// changes, when a window is closed, and when tabs are reordered
     /// with the mouse.
     func relabelTabs() {
+        TabSidebarModel.setNeedsRefresh()
+
         // We only listen for frame changes if we have more than 1 window,
         // otherwise the accessory view doesn't matter.
         tabListenForFrame = window?.tabbedWindows?.count ?? 0 > 1
@@ -1114,7 +1119,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Initialize our content view to the SwiftUI root
         let container = TerminalViewContainer {
-            TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            TabSidebarLayout(model: tabSidebar) {
+                TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            }
         }
 
         // Set the initial content size on the container so that
@@ -1124,6 +1131,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         container.initialContentSize = focusedSurface?.initialSize
 
         window.contentView = container
+        tabSidebar.window = window
+        TabSidebarMenu.install()
 
         // If we have a default size, we want to apply it.
         if let defaultSize {

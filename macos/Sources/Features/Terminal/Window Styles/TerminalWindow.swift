@@ -260,6 +260,7 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
+            childViewController.isHidden = TabSidebarModel.hidesNativeTabBar
             tabBarDidAppear()
         }
     }

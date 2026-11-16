@@ -1,0 +1,237 @@
+import AppKit
+import Combine
+import Darwin
+
+/// A coding agent running in a tab.
+enum TabAgent: Equatable {
+    case claude
+    case codex
+
+    var name: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "Codex"
+        }
+    }
+}
+
+/// Everything the sidebar shows about a single tab.
+struct TabInfo: Equatable, Identifiable {
+    let id: ObjectIdentifier
+    var title: String
+    var pwd: String?
+    var repoName: String?
+    var branch: String?
+    var shortcut: String?
+    var agent: TabAgent?
+    var isWorking: Bool
+    var needsAttention: Bool
+    var issueKey: String?
+    var issue: LinearIssue?
+
+    /// The pwd with the home directory shortened to `~`.
+    var displayPwd: String? {
+        guard let pwd else { return nil }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if pwd == home { return "~" }
+        if pwd.hasPrefix(home + "/") { return "~" + pwd.dropFirst(home.count) }
+        return pwd
+    }
+
+    func matches(_ query: String) -> Bool {
+        let query = query.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return true }
+        return [title, pwd, branch, repoName, issueKey, issue?.title, issue?.project?.name, agent?.name]
+            .compactMap { $0 }
+            .contains { $0.localizedCaseInsensitiveContains(query) }
+    }
+}
+
+/// Tracks metadata and agent activity for every terminal tab in the app.
+///
+/// Tabs are polled twice a second, which is cheap (in-memory surface state, a cached
+/// `.git` read and a `proc_pidpath` call per surface) and far more reliable than trying
+/// to observe every source of change. The store also turns an agent finishing its turn
+/// in a background tab into a notification and an "needs attention" badge.
+@MainActor
+final class TabSidebarStore: ObservableObject {
+    static let shared = TabSidebarStore()
+
+    @Published private(set) var tabs: [ObjectIdentifier: TabInfo] = [:]
+
+    private struct AgentState {
+        var workStartedAt: Date?
+        var lastWorkingAt: Date?
+        var wasWorking = false
+        var needsAttention = false
+    }
+
+    private var agentStates: [ObjectIdentifier: AgentState] = [:]
+    private var timer: Timer?
+
+    /// Claude Code briefly clears its progress report between tool calls, so a tab keeps
+    /// counting as working for this long after the last progress report.
+    private let workingGrace: TimeInterval = 3
+
+    /// Turns shorter than this never notify, which filters out progress flickers.
+    private let minimumTurnForNotification: TimeInterval = 3
+
+    private init() {
+        LinearClient.shared.onUpdate = { [weak self] in
+            MainActor.assumeIsolated { self?.update() }
+        }
+
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.update() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    /// Re-reads every tab right away instead of waiting for the next poll.
+    func setNeedsUpdate() {
+        Task { @MainActor [weak self] in self?.update() }
+    }
+
+    private func update() {
+        let now = Date()
+        var next: [ObjectIdentifier: TabInfo] = [:]
+        for window in NSApp.windows {
+            guard let controller = window.windowController as? TerminalController else { continue }
+            next[ObjectIdentifier(window)] = info(for: window, controller: controller, now: now)
+        }
+
+        agentStates = agentStates.filter { next[$0.key] != nil }
+        if next != tabs {
+            tabs = next
+        }
+    }
+
+    private func info(for window: NSWindow, controller: TerminalController, now: Date) -> TabInfo {
+        let id = ObjectIdentifier(window)
+        let surfaces = Array(controller.surfaceTree)
+        let focused = controller.focusedSurface ?? surfaces.first
+        let pwd = focused?.pwd
+        let git = pwd.flatMap(GitInfo.lookup)
+        let rawTitle = window.title
+
+        let agent = surfaces.lazy.compactMap(Self.agent(for:)).first ?? Self.agent(fromTitle: rawTitle)
+        let reportsProgress = surfaces.contains { surface in
+            guard let report = surface.progressReport else { return false }
+            return report.state != .remove
+        }
+
+        var state = agentStates[id] ?? AgentState()
+        if agent != nil && (reportsProgress || Self.isSpinner(rawTitle.first)) {
+            if state.workStartedAt == nil {
+                state.workStartedAt = now
+            }
+            state.lastWorkingAt = now
+        }
+
+        let isWorking = state.lastWorkingAt.map { now.timeIntervalSince($0) < workingGrace } ?? false
+        let isSeen = NSApp.isActive && window.isKeyWindow
+        let issueKey = LinearClient.identifier(in: [git?.branch, rawTitle, pwd])
+        let title = Self.displayTitle(rawTitle, pwd: pwd)
+
+        var info = TabInfo(
+            id: id,
+            title: title,
+            pwd: pwd,
+            repoName: git?.repoName,
+            branch: git?.branch,
+            shortcut: (window as? TerminalWindow)?.keyEquivalent,
+            agent: agent,
+            isWorking: isWorking,
+            needsAttention: false,
+            issueKey: issueKey,
+            issue: issueKey.flatMap { LinearClient.shared.issue($0) })
+
+        if state.wasWorking && !isWorking {
+            let turnLength = state.workStartedAt.map { now.timeIntervalSince($0) } ?? 0
+            if !isSeen && turnLength >= minimumTurnForNotification, let agent, let focused {
+                state.needsAttention = true
+                notifyFinished(agent: agent, info: info, surface: focused)
+            }
+            state.workStartedAt = nil
+        }
+
+        if isWorking || isSeen {
+            state.needsAttention = false
+        }
+
+        state.wasWorking = isWorking
+        agentStates[id] = state
+
+        // A ringing bell also counts as unread so ⌥⇧↑/↓ can jump to it.
+        info.needsAttention = state.needsAttention || (controller.bell && !isSeen)
+        return info
+    }
+
+    private func notifyFinished(agent: TabAgent, info: TabInfo, surface: Ghostty.SurfaceView) {
+        let issue = info.issue.map { "\($0.identifier) \($0.title)" } ?? info.issueKey
+        let body = [issue, info.repoName, info.branch]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+
+        surface.showUserNotification(
+            title: "\(agent.name) is ready for you",
+            body: body.isEmpty ? (info.displayPwd ?? info.title) : body)
+
+        if !NSApp.isActive {
+            NSApp.requestUserAttention(.informationalRequest)
+        }
+    }
+
+    // MARK: Detection
+
+    private static func agent(for surface: Ghostty.SurfaceView) -> TabAgent? {
+        guard let pid = surface.surfaceModel?.foregroundPID else { return nil }
+
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(Int32(pid), &buffer, UInt32(buffer.count)) > 0 else { return nil }
+
+        // Claude Code installs versioned binaries such as ~/.local/share/claude/versions/2.1.0,
+        // so the process name alone is just a version number.
+        let path = String(cString: buffer).lowercased()
+        if path.contains("/claude/versions/") || path.hasSuffix("/claude") {
+            return .claude
+        }
+
+        if path.hasSuffix("/codex") || path.contains("/codex/") {
+            return .codex
+        }
+
+        return nil
+    }
+
+    /// Claude Code prefixes the terminal title with ✳ while it is running.
+    private static func agent(fromTitle title: String) -> TabAgent? {
+        title.hasPrefix("✳") ? .claude : nil
+    }
+
+    /// Spinner glyphs that agents put at the start of the title while busy.
+    private static func isSpinner(_ character: Character?) -> Bool {
+        guard let scalar = character?.unicodeScalars.first else { return false }
+        if (0x2800...0x28FF).contains(scalar.value) { return true }
+        return "◐◓◑◒".unicodeScalars.contains(scalar)
+    }
+
+    /// Drops agent status glyphs from the title and replaces the default
+    /// `user@host:path` shell title with the directory name.
+    private static func displayTitle(_ title: String, pwd: String?) -> String {
+        var result = Substring(title)
+        while let first = result.first,
+              !first.isLetter, !first.isNumber, !"~/.([".contains(first),
+              result.dropFirst().first == " " {
+            result = result.dropFirst(2)
+        }
+
+        let trimmed = result.trimmingCharacters(in: .whitespaces)
+        if let pwd, trimmed.contains("@"), trimmed.contains(":"), !trimmed.contains(" ") {
+            return URL(fileURLWithPath: pwd).lastPathComponent
+        }
+
+        return trimmed.isEmpty ? "👻" : trimmed
+    }
+}
