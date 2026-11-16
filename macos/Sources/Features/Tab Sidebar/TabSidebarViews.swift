@@ -3,6 +3,9 @@ import SwiftUI
 /// Claude's brand orange, used for the Claude avatar and working indicator.
 private let claudeColor = Color(red: 0.85, green: 0.47, blue: 0.34)
 
+/// Horizontal space each tree level is indented by.
+private let treeIndent: CGFloat = 16
+
 struct TabSidebarView: View {
     @ObservedObject var model: TabSidebarModel
 
@@ -11,7 +14,7 @@ struct TabSidebarView: View {
             TabSidebarHeader(model: model)
 
             ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     if model.isGrouped {
                         ForEach(model.sections) { section in
                             TabSidebarSectionView(model: model, section: section)
@@ -31,7 +34,7 @@ struct TabSidebarView: View {
                     }
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             }
         }
         .background(.regularMaterial)
@@ -42,7 +45,7 @@ private struct TabSidebarHeader: View {
     @ObservedObject var model: TabSidebarModel
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
@@ -67,9 +70,16 @@ private struct TabSidebarHeader: View {
             .padding(.vertical, 5)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
 
+            if model.isGrouped {
+                TabSidebarIconButton(
+                    systemImage: model.canCollapseAll ? "rectangle.compress.vertical" : "rectangle.expand.vertical",
+                    help: model.canCollapseAll ? "Collapse All" : "Expand All",
+                    action: model.toggleCollapseAll)
+            }
+
             TabSidebarIconButton(
                 systemImage: model.isGrouped ? "list.bullet.indent" : "list.bullet",
-                help: model.isGrouped ? "Show as list" : "Group by project and issue",
+                help: model.isGrouped ? "Show as List" : "Group by Project and Issue",
                 action: model.toggleGrouping)
 
             TabSidebarIconButton(systemImage: "plus", help: "New Tab", action: model.newTab)
@@ -103,58 +113,101 @@ private struct TabSidebarIconButton: View {
 
 // MARK: Tree
 
+/// A collapsible tree node: a header row with a chevron and its children indented
+/// below it, joined by a thin guide line.
+private struct TreeNode<Label: View, Children: View>: View {
+    @ObservedObject var model: TabSidebarModel
+    let id: String
+    let label: Label
+    let children: Children
+
+    @State private var isHovering = false
+
+    private var isExpanded: Bool { !model.isCollapsed(id) }
+
+    init(
+        model: TabSidebarModel,
+        id: String,
+        @ViewBuilder label: () -> Label,
+        @ViewBuilder children: () -> Children
+    ) {
+        self.model = model
+        self.id = id
+        self.label = label()
+        self.children = children()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                model.toggleCollapsed(id)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 12, height: 12)
+
+                    label
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(isHovering ? 0.05 : 0)))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovering = $0 }
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    children
+                }
+                .padding(.leading, treeIndent)
+                .overlay(alignment: .leading) {
+                    // Line up the guide with the center of the chevron above.
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 1)
+                        .padding(.leading, 9.5)
+                        .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+}
+
 private struct TabSidebarSectionView: View {
     @ObservedObject var model: TabSidebarModel
     let section: TabSidebarSection
 
-    private var isCollapsed: Bool { model.collapsedSections.contains(section.id) }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { model.toggleSection(section.id) }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                        .frame(width: 10)
-
-                    if section.isLinearProject {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(section.color ?? .secondary)
-                            .frame(width: 10, height: 10)
-                    } else {
-                        Image(systemName: "folder")
-                            .font(.system(size: 10))
-                    }
-
-                    Text(section.title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .lineLimit(1)
-
-                    Spacer(minLength: 4)
-
-                    Text("\(section.tabCount)")
-                        .font(.system(size: 10, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
-                .padding(.top, 6)
-                .padding(.bottom, 2)
-                .contentShape(Rectangle())
+        TreeNode(model: model, id: section.id) {
+            if section.isLinearProject {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(section.color ?? .secondary)
+                    .frame(width: 10, height: 10)
+            } else {
+                Image(systemName: "folder")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
 
-            if !isCollapsed {
-                ForEach(section.groups) { group in
-                    if group.issueKey != nil {
-                        TabSidebarIssueGroup(model: model, group: group)
-                    } else {
-                        ForEach(group.tabs) { tab in
-                            TabCard(model: model, tab: tab)
-                        }
+            Text(section.title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            TreeCount(count: section.tabCount)
+        } children: {
+            ForEach(section.groups) { group in
+                if group.issueKey != nil {
+                    TabSidebarIssueNode(model: model, group: group)
+                } else {
+                    ForEach(group.tabs) { tab in
+                        TabCard(model: model, tab: tab)
                     }
                 }
             }
@@ -162,48 +215,49 @@ private struct TabSidebarSectionView: View {
     }
 }
 
-private struct TabSidebarIssueGroup: View {
+private struct TabSidebarIssueNode: View {
     @ObservedObject var model: TabSidebarModel
     let group: TabSidebarSection.Group
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Circle()
-                    .strokeBorder(Color(linearHex: group.issue?.stateColor) ?? .secondary, lineWidth: 1.5)
-                    .frame(width: 9, height: 9)
+        TreeNode(model: model, id: group.id) {
+            Circle()
+                .strokeBorder(Color(linearHex: group.issue?.stateColor) ?? .secondary, lineWidth: 1.5)
+                .frame(width: 10, height: 10)
 
-                Text(group.issueKey ?? "")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.secondary)
+            Text(group.issueKey ?? "")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize()
 
-                if let title = group.issue?.title {
-                    Text(title)
-                        .font(.system(size: 11))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                Spacer(minLength: 0)
+            if let title = group.issue?.title {
+                Text(title)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .padding(.horizontal, 6)
-            .help(group.issue.map { "\($0.identifier) · \($0.stateName)\n\($0.title)" } ?? (group.issueKey ?? ""))
 
-            VStack(spacing: 4) {
-                ForEach(group.tabs) { tab in
-                    TabCard(model: model, tab: tab, showsIssue: false)
-                }
+            Spacer(minLength: 4)
+
+            if group.tabs.count > 1 {
+                TreeCount(count: group.tabs.count)
             }
-            .padding(.leading, 10)
-            .overlay(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.1))
-                    .frame(width: 1)
-                    .padding(.leading, 10)
-                    .offset(x: -6)
+        } children: {
+            ForEach(group.tabs) { tab in
+                TabCard(model: model, tab: tab, showsIssue: false)
             }
         }
-        .padding(.top, 2)
+        .help(group.issue.map { "\($0.identifier) · \($0.stateName)\n\($0.title)" } ?? (group.issueKey ?? ""))
+    }
+}
+
+private struct TreeCount: View {
+    let count: Int
+
+    var body: some View {
+        Text("\(count)")
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
+            .foregroundStyle(.tertiary)
     }
 }
 
@@ -220,7 +274,7 @@ private struct TabCard: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            TabAvatar(agent: tab.agent, isWorking: tab.isWorking, needsAttention: tab.needsAttention)
+            TabAvatar(agent: tab.agent, needsAttention: tab.needsAttention)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -269,7 +323,6 @@ private struct TabCard: View {
             Divider()
             Button("Close Tab") { model.close(tab.id) }
         }
-        .animation(.easeInOut(duration: 0.15), value: isSelected)
     }
 
     @ViewBuilder
@@ -327,19 +380,23 @@ private struct TabCard: View {
     @ViewBuilder
     private var statusRow: some View {
         if let agent = tab.agent {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 if tab.isWorking {
-                    Text("\(agent.name) is working…")
-                        .foregroundStyle(claudeColor)
+                    TabWorkingDot()
+                    Text("Working")
+                        .foregroundStyle(.secondary)
                 } else if tab.needsAttention {
-                    Text("\(agent.name) is ready for you")
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                    Text("Ready for you")
                         .foregroundStyle(Color.accentColor)
                 } else {
                     Text("\(agent.name) · idle")
                         .foregroundStyle(.tertiary)
                 }
             }
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: 11))
         }
     }
 
@@ -356,11 +413,9 @@ private struct TabCard: View {
     }
 }
 
-/// The round icon at the start of a card. Agents get their own mark, a spinning ring
-/// while they work and a dot when they are waiting for you.
+/// The round icon at the start of a card, with a dot when the agent is waiting for you.
 private struct TabAvatar: View {
     let agent: TabAgent?
-    let isWorking: Bool
     let needsAttention: Bool
 
     var body: some View {
@@ -371,10 +426,6 @@ private struct TabAvatar: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(agent == nil ? Color.secondary : Color.white)
-
-            if isWorking {
-                TabWorkingRing()
-            }
         }
         .frame(width: 26, height: 26)
         .overlay(alignment: .topTrailing) {
@@ -405,54 +456,70 @@ private struct TabAvatar: View {
     }
 }
 
-private struct TabWorkingRing: View {
-    @State private var isRotating = false
+/// A small dot that slowly breathes while the agent works.
+private struct TabWorkingDot: View {
+    @State private var isDim = false
 
     var body: some View {
         Circle()
-            .trim(from: 0, to: 0.3)
-            .stroke(claudeColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-            .padding(-3)
-            .rotationEffect(.degrees(isRotating ? 360 : 0))
-            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: isRotating)
-            .onAppear { isRotating = true }
+            .fill(claudeColor)
+            .frame(width: 6, height: 6)
+            .opacity(isDim ? 0.35 : 1)
+            .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true), value: isDim)
+            .onAppear { isDim = true }
     }
 }
 
 // MARK: Resize
 
+/// The grab area along the sidebar's trailing edge. It sits inside the sidebar because
+/// the terminal view next to it receives all mouse events over its own frame. The drag
+/// is measured in global coordinates because the handle moves with the width, and the
+/// width is only persisted when the drag ends.
 struct TabSidebarResizeHandle: View {
-    @ObservedObject var model: TabSidebarModel
+    @ObservedObject var frame: TabSidebarFrame
     @State private var startWidth: CGFloat?
+
+    static let hitWidth: CGFloat = 10
+
+    var body: some View {
+        Color.clear
+            .frame(width: Self.hitWidth)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.set()
+                } else if startWidth == nil {
+                    NSCursor.arrow.set()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = startWidth ?? frame.width
+                        if startWidth == nil {
+                            startWidth = start
+                            frame.isResizing = true
+                        }
+                        frame.setLiveWidth(start + value.translation.width)
+                        NSCursor.resizeLeftRight.set()
+                    }
+                    .onEnded { _ in
+                        startWidth = nil
+                        frame.isResizing = false
+                        frame.commitWidth()
+                    })
+    }
+}
+
+/// The 1pt line between the sidebar and the terminal, highlighted while resizing.
+struct TabSidebarDivider: View {
+    @ObservedObject var frame: TabSidebarFrame
 
     var body: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.08))
+            .fill(frame.isResizing ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.08))
             .frame(width: 1)
-            .overlay {
-                Color.clear
-                    .frame(width: 8)
-                    .contentShape(Rectangle())
-                    .onHover { hovering in
-                        if hovering {
-                            NSCursor.resizeLeftRight.push()
-                        } else {
-                            NSCursor.pop()
-                        }
-                    }
-                    .gesture(
-                        DragGesture(minimumDistance: 1)
-                            .onChanged { value in
-                                let start = startWidth ?? model.width
-                                startWidth = start
-                                let proposed = start + value.translation.width
-                                model.width = min(max(proposed, TabSidebarModel.widthRange.lowerBound),
-                                                  TabSidebarModel.widthRange.upperBound)
-                            }
-                            .onEnded { _ in
-                                startWidth = nil
-                                model.commitWidth()
-                            })
-            }
     }
 }

@@ -20,6 +20,7 @@ class TabSidebarModel: ObservableObject {
     private static let visibleKey = "TabSidebarVisible"
     private static let groupedKey = "TabSidebarGrouped"
     private static let widthKey = "TabSidebarWidth"
+    private static let collapsedKey = "TabSidebarCollapsed"
 
     static let widthRange: ClosedRange<CGFloat> = 200...480
 
@@ -43,6 +44,13 @@ class TabSidebarModel: ObservableObject {
         set { setPreference(Double(newValue), forKey: widthKey) }
     }
 
+    /// The collapsed tree nodes (projects and issues). Shared by all windows so that
+    /// switching tabs keeps the tree as it was.
+    static var collapsed: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? []) }
+        set { setPreference(Array(newValue).sorted(), forKey: collapsedKey) }
+    }
+
     /// Whether the native tab bar should be hidden because the sidebar replaces it.
     static var hidesNativeTabBar: Bool { isVisible }
 
@@ -61,11 +69,13 @@ class TabSidebarModel: ObservableObject {
 
     @Published private(set) var tabs: [TabInfo] = []
     @Published private(set) var selectedID: ObjectIdentifier?
-    @Published private(set) var isVisible: Bool = TabSidebarModel.isVisible
     @Published private(set) var isGrouped: Bool = TabSidebarModel.isGrouped
-    @Published var width: CGFloat = TabSidebarModel.width
+    @Published private(set) var collapsed: Set<String> = TabSidebarModel.collapsed
     @Published var query: String = ""
-    @Published var collapsedSections: Set<String> = []
+
+    /// Visibility and width live in their own object so that the terminal next to the
+    /// sidebar only re-renders when those change, not on every tab update.
+    let frame = TabSidebarFrame()
 
     /// The window this sidebar belongs to.
     weak var window: NSWindow? {
@@ -84,9 +94,13 @@ class TabSidebarModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.isVisible = Self.isVisible
-                self.isGrouped = Self.isGrouped
-                self.width = Self.width
+                self.frame.sync()
+                if self.isGrouped != Self.isGrouped {
+                    self.isGrouped = Self.isGrouped
+                }
+                if self.collapsed != Self.collapsed {
+                    self.collapsed = Self.collapsed
+                }
                 self.refresh()
             }
             .store(in: &cancellables)
@@ -160,11 +174,38 @@ class TabSidebarModel: ObservableObject {
         return sections
     }
 
-    func toggleSection(_ id: String) {
-        if collapsedSections.contains(id) {
-            collapsedSections.remove(id)
+    func isCollapsed(_ id: String) -> Bool {
+        collapsed.contains(id)
+    }
+
+    func toggleCollapsed(_ id: String) {
+        var next = Self.collapsed
+        if next.contains(id) {
+            next.remove(id)
         } else {
-            collapsedSections.insert(id)
+            next.insert(id)
+        }
+        Self.collapsed = next
+    }
+
+    /// Every collapsible node currently in the tree.
+    private var treeNodeIDs: Set<String> {
+        Set(sections.flatMap { section in
+            [section.id] + section.groups.filter { $0.issueKey != nil }.map(\.id)
+        })
+    }
+
+    /// True when at least one visible node is expanded, so the toolbar offers to collapse.
+    var canCollapseAll: Bool {
+        !treeNodeIDs.isSubset(of: collapsed)
+    }
+
+    func toggleCollapseAll() {
+        let nodes = treeNodeIDs
+        if canCollapseAll {
+            Self.collapsed = Self.collapsed.union(nodes)
+        } else {
+            Self.collapsed = Self.collapsed.subtracting(nodes)
         }
     }
 
@@ -223,8 +264,36 @@ class TabSidebarModel: ObservableObject {
         Self.isGrouped.toggle()
     }
 
+}
+
+/// The sidebar's visibility and width, observed by the layout around the terminal.
+@MainActor
+final class TabSidebarFrame: ObservableObject {
+    @Published private(set) var isVisible: Bool = TabSidebarModel.isVisible
+    @Published private(set) var width: CGFloat = TabSidebarModel.width
+    @Published var isResizing = false
+
+    func sync() {
+        if isVisible != TabSidebarModel.isVisible {
+            isVisible = TabSidebarModel.isVisible
+        }
+        if width != TabSidebarModel.width {
+            width = TabSidebarModel.width
+        }
+    }
+
+    /// Updates the width while dragging without persisting it.
+    func setLiveWidth(_ proposed: CGFloat) {
+        let clamped = min(max(proposed, TabSidebarModel.widthRange.lowerBound),
+                          TabSidebarModel.widthRange.upperBound).rounded()
+        if clamped != width {
+            width = clamped
+        }
+    }
+
+    /// Persists the current width once the drag ends so every window picks it up.
     func commitWidth() {
-        Self.width = width
+        TabSidebarModel.width = width
     }
 }
 
@@ -255,27 +324,32 @@ struct TabSidebarSection: Identifiable {
         if let index = groups.firstIndex(where: { $0.issueKey == key }) {
             groups[index].tabs.append(tab)
         } else {
-            groups.append(Group(id: "issue:\(key)", issueKey: key, issue: tab.issue, tabs: [tab]))
+            groups.append(Group(id: "\(id)|issue:\(key)", issueKey: key, issue: tab.issue, tabs: [tab]))
         }
     }
 }
 
 /// Places the tab sidebar to the left of the terminal content.
 struct TabSidebarLayout<Content: View>: View {
-    @ObservedObject var model: TabSidebarModel
+    let model: TabSidebarModel
+    @ObservedObject var frame: TabSidebarFrame
     let content: Content
 
     init(model: TabSidebarModel, @ViewBuilder content: () -> Content) {
         self.model = model
+        self.frame = model.frame
         self.content = content()
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            if model.isVisible {
+            if frame.isVisible {
                 TabSidebarView(model: model)
-                    .frame(width: model.width)
-                TabSidebarResizeHandle(model: model)
+                    .frame(width: frame.width)
+                    .overlay(alignment: .trailing) {
+                        TabSidebarResizeHandle(frame: frame)
+                    }
+                TabSidebarDivider(frame: frame)
             }
 
             content
