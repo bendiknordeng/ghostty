@@ -185,11 +185,42 @@ final class TabSidebarStore: ObservableObject {
 
     // MARK: Detection
 
+    /// Agents are often started through wrappers (shell functions, proxies, node or python
+    /// launchers), so the foreground process is not necessarily the agent itself. Search
+    /// the foreground process and a few levels of its descendants.
     private static func agent(for surface: Ghostty.SurfaceView) -> TabAgent? {
-        guard let pid = surface.surfaceModel?.foregroundPID else { return nil }
+        guard let foreground = surface.surfaceModel?.foregroundPID else { return nil }
 
+        var queue: [(pid: pid_t, depth: Int)] = [(pid_t(foreground), 0)]
+        while !queue.isEmpty {
+            let (pid, depth) = queue.removeFirst()
+            if let agent = agent(forPID: pid) {
+                return agent
+            }
+
+            if depth < 4 {
+                queue.append(contentsOf: childPIDs(of: pid).map { ($0, depth + 1) })
+            }
+        }
+
+        return nil
+    }
+
+    private static func childPIDs(of pid: pid_t) -> [pid_t] {
+        var buffer = [pid_t](repeating: 0, count: 64)
+        let result = buffer.withUnsafeMutableBytes { bytes in
+            proc_listchildpids(pid, bytes.baseAddress, Int32(bytes.count))
+        }
+        guard result > 0 else { return [] }
+
+        // Depending on the macOS version the result is a count or a byte size, so read
+        // at most the whole buffer and drop the unused zero entries.
+        return buffer.prefix(min(Int(result), buffer.count)).filter { $0 > 0 }
+    }
+
+    private static func agent(forPID pid: pid_t) -> TabAgent? {
         var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        guard proc_pidpath(Int32(pid), &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
 
         // Claude Code installs versioned binaries such as ~/.local/share/claude/versions/2.1.0,
         // so the process name alone is just a version number.
