@@ -273,13 +273,16 @@ private struct TabCard: View {
     private var isSelected: Bool { model.selectedID == tab.id }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            TabAvatar(agent: tab.agent, needsAttention: tab.needsAttention)
+        HStack(alignment: .top, spacing: 8) {
+            TabUnreadDot(isUnread: tab.needsAttention)
+
+            TabAvatar(agent: tab.agent)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(tab.title)
-                        .font(.system(size: 12, weight: tab.needsAttention ? .bold : .semibold, design: .monospaced))
+                        .font(.system(size: 12, weight: tab.needsAttention ? .bold : .medium, design: .monospaced))
+                        .foregroundStyle(tab.needsAttention || isSelected ? Color.primary : Color.primary.opacity(0.85))
                         .lineLimit(1)
                         .truncationMode(.tail)
 
@@ -300,13 +303,15 @@ private struct TabCard: View {
                 statusRow
             }
         }
-        .padding(10)
+        .padding(.vertical, 10)
+        .padding(.leading, 4)
+        .padding(.trailing, 10)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.primary.opacity(backgroundOpacity)))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(borderColor, lineWidth: 1))
+                .strokeBorder(Color.primary.opacity(isSelected ? 0.18 : 0.06), lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .onTapGesture { model.select(tab.id) }
         .onHover { isHovering = $0 }
@@ -319,6 +324,9 @@ private struct TabCard: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(pwd, forType: .string)
                 }
+            }
+            Button(tab.needsAttention ? "Mark as Read" : "Mark as Unread") {
+                model.setUnread(tab.id, !tab.needsAttention)
             }
             Divider()
             Button("Close Tab") { model.close(tab.id) }
@@ -402,11 +410,8 @@ private struct TabCard: View {
                     Text("Working")
                         .foregroundStyle(.secondary)
                 } else if tab.needsAttention {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
-                    Text("Ready for you")
-                        .foregroundStyle(Color.accentColor)
+                    Text("\(agent.name) · ready for you")
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("\(agent.name) · idle")
                         .foregroundStyle(.tertiary)
@@ -422,10 +427,21 @@ private struct TabCard: View {
         return 0.035
     }
 
-    private var borderColor: Color {
-        if tab.needsAttention { return Color.accentColor.opacity(0.7) }
-        if isSelected { return Color.primary.opacity(0.18) }
-        return Color.primary.opacity(0.06)
+}
+
+/// Slack-style unread marker in a fixed gutter so titles stay aligned whether or not a
+/// tab is unread.
+private struct TabUnreadDot: View {
+    let isUnread: Bool
+
+    var body: some View {
+        Circle()
+            .fill(Color.accentColor)
+            .frame(width: 7, height: 7)
+            .opacity(isUnread ? 1 : 0)
+            .frame(width: 8, height: 26)
+            .animation(.easeOut(duration: 0.2), value: isUnread)
+            .accessibilityLabel(isUnread ? "Unread" : "")
     }
 }
 
@@ -477,10 +493,9 @@ private struct TabResourceLabel: View {
     }
 }
 
-/// The round icon at the start of a card, with a dot when the agent is waiting for you.
+/// The round icon at the start of a card.
 private struct TabAvatar: View {
     let agent: TabAgent?
-    let needsAttention: Bool
 
     var body: some View {
         ZStack {
@@ -492,15 +507,6 @@ private struct TabAvatar: View {
                 .foregroundStyle(agent == nil ? Color.secondary : Color.white)
         }
         .frame(width: 26, height: 26)
-        .overlay(alignment: .topTrailing) {
-            if needsAttention {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 9, height: 9)
-                    .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                    .offset(x: 2, y: -2)
-            }
-        }
     }
 
     private var symbol: String {

@@ -230,6 +230,10 @@ class TabSidebarModel: ObservableObject {
         (window?.windowController as? TerminalController)?.newTab(nil)
     }
 
+    func setUnread(_ id: ObjectIdentifier, _ unread: Bool) {
+        TabSidebarStore.shared.setUnread(id, unread)
+    }
+
     func openIssue(_ tab: TabInfo) {
         guard let url = tab.issue?.url else { return }
         NSWorkspace.shared.open(url)

@@ -65,6 +65,7 @@ final class TabSidebarStore: ObservableObject {
         var workStartedAt: Date?
         var lastWorkingAt: Date?
         var wasWorking = false
+        var wasSeen = false
         var needsAttention = false
     }
 
@@ -177,6 +178,13 @@ final class TabSidebarStore: ObservableObject {
         update()
     }
 
+    func setUnread(_ id: ObjectIdentifier, _ unread: Bool) {
+        var state = agentStates[id] ?? AgentState()
+        state.needsAttention = unread
+        agentStates[id] = state
+        update()
+    }
+
     /// Posts a sample notification for the selected tab after a short delay, so you can
     /// switch away and check that notifications and the Dock badge work.
     func sendTestNotification() {
@@ -243,11 +251,14 @@ final class TabSidebarStore: ObservableObject {
             state.workStartedAt = nil
         }
 
-        if isWorking || isSeen {
+        // Like Slack, a tab becomes read when you switch to it. Marking the tab you are
+        // looking at as unread sticks until you leave it and come back.
+        if isWorking || (isSeen && !state.wasSeen) {
             state.needsAttention = false
         }
 
         state.wasWorking = isWorking
+        state.wasSeen = isSeen
         agentStates[id] = state
 
         // A ringing bell also counts as unread so ⌥⇧↑/↓ can jump to it.
