@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Darwin
+import UserNotifications
 
 /// A coding agent running in a tab.
 enum TabAgent: Equatable {
@@ -85,6 +86,12 @@ final class TabSidebarStore: ObservableObject {
     /// Turns shorter than this never notify, which filters out progress flickers.
     private let minimumTurnForNotification: TimeInterval = 3
 
+    /// Tabs whose agent finished or asked for input while you were elsewhere. This feeds
+    /// the Dock badge together with Ghostty's own bell count.
+    private(set) var agentAttentionCount = 0
+
+    private var didRequestNotificationAuthorization = false
+
     private init() {
         LinearClient.shared.onUpdate = { [weak self] in
             MainActor.assumeIsolated { self?.update() }
@@ -130,6 +137,60 @@ final class TabSidebarStore: ObservableObject {
         resources = resources.filter { next[$0.key] != nil }
         if next != tabs {
             tabs = next
+        }
+
+        if !next.isEmpty {
+            requestNotificationAuthorization()
+        }
+
+        let attentionCount = agentStates.values.filter(\.needsAttention).count
+        if attentionCount != agentAttentionCount {
+            agentAttentionCount = attentionCount
+            (NSApp.delegate as? AppDelegate)?.syncDockBadge()
+        }
+    }
+
+    /// Ghostty only asks for notification permission when a program sends a desktop
+    /// notification escape sequence, which agents rarely do, so ask once up front.
+    private func requestNotificationAuthorization() {
+        guard !didRequestNotificationAuthorization else { return }
+        didRequestNotificationAuthorization = true
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, error in
+            if let error {
+                Ghostty.logger.warning("tab sidebar notification authorization failed: \(error, privacy: .public)")
+            }
+        }
+    }
+
+    /// Called when a program in a surface posts its own desktop notification, such as
+    /// Claude Code asking for permission. Marks the tab as needing attention unless you
+    /// are looking at it.
+    func surfaceDidPostNotification(_ surface: Ghostty.SurfaceView) {
+        guard let window = surface.window,
+              window.windowController is TerminalController,
+              !(NSApp.isActive && window.isKeyWindow) else { return }
+
+        let id = ObjectIdentifier(window)
+        var state = agentStates[id] ?? AgentState()
+        state.needsAttention = true
+        agentStates[id] = state
+        update()
+    }
+
+    /// Posts a sample notification for the selected tab after a short delay, so you can
+    /// switch away and check that notifications and the Dock badge work.
+    func sendTestNotification() {
+        guard let window = NSApp.keyWindow,
+              let controller = window.windowController as? TerminalController,
+              let surface = controller.focusedSurface,
+              let info = tabs[ObjectIdentifier(window)] else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.notifyFinished(agent: info.agent ?? .claude, info: info, surface: surface)
+                self.surfaceDidPostNotification(surface)
+            }
         }
     }
 
@@ -210,9 +271,12 @@ final class TabSidebarStore: ObservableObject {
             .compactMap { $0 }
             .joined(separator: " · ")
 
+        // We only notify for tabs you are not looking at, so don't let Ghostty suppress
+        // the banner based on surface focus.
         surface.showUserNotification(
             title: "\(agent.name) is ready for you",
-            body: body.isEmpty ? (info.displayPwd ?? info.title) : body)
+            body: body.isEmpty ? (info.displayPwd ?? info.title) : body,
+            requireFocus: false)
 
         if !NSApp.isActive {
             NSApp.requestUserAttention(.informationalRequest)

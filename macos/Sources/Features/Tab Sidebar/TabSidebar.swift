@@ -384,6 +384,7 @@ final class TabSidebarMenu: NSObject, NSMenuItemValidation {
             navigationItem("Next Tab", #selector(nextTab(_:)), arrow: NSDownArrowFunctionKey, shift: false),
             navigationItem("Previous Unread Tab", #selector(previousUnreadTab(_:)), arrow: NSUpArrowFunctionKey, shift: true),
             navigationItem("Next Unread Tab", #selector(nextUnreadTab(_:)), arrow: NSDownArrowFunctionKey, shift: true),
+            testNotificationItem(),
             NSMenuItem.separator(),
         ]
         for (index, item) in items.enumerated() {
@@ -427,6 +428,19 @@ final class TabSidebarMenu: NSObject, NSMenuItemValidation {
         item.keyEquivalentModifierMask = shift ? [.option, .shift] : [.option]
         item.target = shared
         return item
+    }
+
+    private static func testNotificationItem() -> NSMenuItem {
+        let item = NSMenuItem(
+            title: "Send Test Agent Notification (in 5s)",
+            action: #selector(sendTestNotification(_:)),
+            keyEquivalent: "")
+        item.target = shared
+        return item
+    }
+
+    @objc private func sendTestNotification(_ sender: Any?) {
+        TabSidebarStore.shared.sendTestNotification()
     }
 
     @objc private func previousTab(_ sender: Any?) {

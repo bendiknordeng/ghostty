@@ -1599,6 +1599,7 @@ extension Ghostty {
                 guard let title = String(cString: n.title, encoding: .utf8) else { return }
                 guard let body = String(cString: n.body, encoding: .utf8) else { return }
                 showDesktopNotification(surfaceView, title: title, body: body)
+                MainActor.assumeIsolated { TabSidebarStore.shared.surfaceDidPostNotification(surfaceView) }
 
             default:
                 assertionFailure()

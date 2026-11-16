@@ -763,7 +763,7 @@ class AppDelegate: NSObject,
         }
     }
 
-    private func syncDockBadge() {
+    func syncDockBadge() {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             switch settings.authorizationStatus {
@@ -819,8 +819,10 @@ class AppDelegate: NSObject,
         let bellCount = NSApp.windows
             .compactMap { $0.windowController as? BaseTerminalController }
             .reduce(0) { $0 + ($1.bell ? 1 : 0) }
-        let wantsBadge = ghostty.config.bellFeatures.contains(.attention) && bellCount > 0
-        let label = wantsBadge ? (bellCount > 99 ? "99+" : String(bellCount)) : nil
+        let bellBadge = ghostty.config.bellFeatures.contains(.attention) ? bellCount : 0
+        let agentCount = MainActor.assumeIsolated { TabSidebarStore.shared.agentAttentionCount }
+        let count = bellBadge + agentCount
+        let label = count > 0 ? (count > 99 ? "99+" : String(count)) : nil
         NSApp.dockTile.badgeLabel = label
         NSApp.dockTile.display()
     }
