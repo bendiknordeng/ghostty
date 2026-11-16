@@ -269,6 +269,15 @@ private struct TabCard: View {
 
     private var isSelected: Bool { model.selectedID == tab.id }
 
+    /// Under its issue group a worktree named after the issue repeats the group header.
+    private var visibleWorktree: String? {
+        guard let worktree = tab.worktree else { return nil }
+        if !showsIssue, let key = tab.issueKey, worktree.uppercased().contains(key) {
+            return nil
+        }
+        return worktree
+    }
+
     /// Under its issue group the issue key is already shown, so drop it from the title
     /// (`edda work` names sessions "PRO-1234 Title").
     private var displayTitle: String {
@@ -378,9 +387,9 @@ private struct TabCard: View {
     @ViewBuilder
     private var metadataRow: some View {
         let issueKey = showsIssue ? tab.issueKey : nil
-        if tab.branch != nil || issueKey != nil || tab.worktree != nil || tab.diff != nil {
+        if tab.branch != nil || issueKey != nil || visibleWorktree != nil || tab.diff != nil {
             HStack(spacing: 6) {
-                if let worktree = tab.worktree {
+                if let worktree = visibleWorktree {
                     HStack(spacing: 3) {
                         Image(systemName: "square.on.square")
                             .font(.system(size: 9))
