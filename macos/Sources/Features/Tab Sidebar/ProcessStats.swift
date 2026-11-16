@@ -129,11 +129,14 @@ final class ProcessStats {
         return String(cString: buffer)
     }
 
+    /// Uses sysctl rather than `proc_pidinfo` because the latter is denied for processes
+    /// owned by another user, such as the setuid `login` that Ghostty starts shells with.
     private static func parentPID(_ pid: pid_t) -> pid_t? {
-        var info = proc_bsdinfo()
-        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
-        return pid_t(info.pbi_ppid)
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
     }
 
     private static func rusage(_ pid: pid_t) -> rusage_info_v2? {
