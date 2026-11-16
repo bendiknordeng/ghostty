@@ -82,6 +82,15 @@ class TabSidebarModel: ObservableObject {
     @Published private(set) var collapsed: Set<String> = TabSidebarModel.collapsed
     @Published var query: String = ""
 
+    /// Drag and drop reordering state.
+    struct DropTarget: Equatable {
+        let id: ObjectIdentifier
+        let after: Bool
+    }
+
+    var draggingID: ObjectIdentifier?
+    @Published var dropTarget: DropTarget?
+
     /// Visibility and width live in their own object so that the terminal next to the
     /// sidebar only re-renders when those change, not on every tab update.
     let frame = TabSidebarFrame()
@@ -126,7 +135,7 @@ class TabSidebarModel: ObservableObject {
     }
 
     func refresh() {
-        guard let window else {
+        guard window != nil else {
             tabs = []
             return
         }
@@ -259,6 +268,31 @@ class TabSidebarModel: ObservableObject {
     func close(_ id: ObjectIdentifier) {
         guard let target = window(for: id) else { return }
         (target.windowController as? TerminalController)?.closeTab(nil)
+    }
+
+    /// Moves a tab before or after another one in the native tab group, which is what
+    /// both the sidebar order and ⌘1-9 follow. Like Ghostty's move_tab, this removes
+    /// the window from the group and adds it back next to the target.
+    func move(_ id: ObjectIdentifier, to targetID: ObjectIdentifier, after: Bool) {
+        guard id != targetID,
+              let moving = window(for: id),
+              let target = window(for: targetID),
+              let tabGroup = moving.tabGroup else { return }
+
+        let selected = tabGroup.selectedWindow
+
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        tabGroup.removeWindow(moving)
+        _ = target.addTabbedWindowSafely(moving, ordered: after ? .above : .below)
+        if let selected {
+            target.tabGroup?.selectedWindow = selected
+            selected.makeKey()
+        }
+        NSAnimationContext.endGrouping()
+
+        (moving.windowController as? TerminalController)?.relabelTabs()
+        Self.setNeedsRefresh()
     }
 
     func newTab() {

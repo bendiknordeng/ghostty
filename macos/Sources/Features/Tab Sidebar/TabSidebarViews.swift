@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Claude's brand orange, used for the Claude avatar and working indicator.
 private let claudeColor = Color(red: 0.85, green: 0.47, blue: 0.34)
@@ -114,7 +115,7 @@ private struct TabSidebarIconButton: View {
 // MARK: Tree
 
 /// A collapsible tree node: a header row with a chevron and its children indented
-/// below it, joined by a thin guide line.
+/// below it.
 private struct TreeNode<Label: View, Children: View>: View {
     @ObservedObject var model: TabSidebarModel
     let id: String
@@ -165,14 +166,6 @@ private struct TreeNode<Label: View, Children: View>: View {
                     children
                 }
                 .padding(.leading, treeIndent)
-                .overlay(alignment: .leading) {
-                    // Line up the guide with the center of the chevron above.
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(width: 1)
-                        .padding(.leading, 9.5)
-                        .padding(.vertical, 2)
-                }
             }
         }
     }
@@ -269,6 +262,7 @@ private struct TabCard: View {
     var showsIssue: Bool = true
 
     @State private var isHovering = false
+    @State private var height: CGFloat = 0
 
     private var isSelected: Bool { model.selectedID == tab.id }
 
@@ -313,8 +307,28 @@ private struct TabCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.primary.opacity(isSelected ? 0.18 : 0.06), lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 8))
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear { height = geometry.size.height }
+                    .onChange(of: geometry.size.height) { height = $0 }
+            }
+        }
+        .overlay(alignment: model.dropTarget?.after == true ? .bottom : .top) {
+            if model.dropTarget?.id == tab.id {
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+                    .offset(y: model.dropTarget?.after == true ? 3 : -3)
+            }
+        }
         .onTapGesture { model.select(tab.id) }
         .onHover { isHovering = $0 }
+        .onDrag {
+            model.draggingID = tab.id
+            return NSItemProvider(object: tab.title as NSString)
+        }
+        .onDrop(of: [UTType.plainText], delegate: TabDropDelegate(model: model, tab: tab, height: height))
         .contextMenu {
             if tab.issue?.url != nil {
                 Button("Open \(tab.issueKey ?? "Issue") in Linear") { model.openIssue(tab) }
@@ -427,6 +441,44 @@ private struct TabCard: View {
         return 0.035
     }
 
+}
+
+/// Reorders tabs by dropping a card on the upper or lower half of another card.
+private struct TabDropDelegate: DropDelegate {
+    let model: TabSidebarModel
+    let tab: TabInfo
+    let height: CGFloat
+
+    private func isAfter(_ info: DropInfo) -> Bool {
+        info.location.y > height / 2
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        model.draggingID != nil && model.draggingID != tab.id
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        let target = TabSidebarModel.DropTarget(id: tab.id, after: isAfter(info))
+        if model.dropTarget != target {
+            model.dropTarget = target
+        }
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if model.dropTarget?.id == tab.id {
+            model.dropTarget = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let after = isAfter(info)
+        model.dropTarget = nil
+        guard let dragged = model.draggingID else { return false }
+        model.draggingID = nil
+        model.move(dragged, to: tab.id, after: after)
+        return true
+    }
 }
 
 /// Slack-style unread marker in a fixed gutter so titles stay aligned whether or not a
