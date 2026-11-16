@@ -28,6 +28,7 @@ struct TabInfo: Equatable, Identifiable {
     var needsAttention: Bool
     var issueKey: String?
     var issue: LinearIssue?
+    var resources: TabResourceUsage?
 
     /// The pwd with the home directory shortened to `~`.
     var displayPwd: String? {
@@ -69,6 +70,14 @@ final class TabSidebarStore: ObservableObject {
     private var agentStates: [ObjectIdentifier: AgentState] = [:]
     private var timer: Timer?
 
+    private let processStats = ProcessStats()
+    private var resources: [ObjectIdentifier: TabResourceUsage] = [:]
+    private var lastResourceSample: Date?
+
+    /// Process trees are walked less often than the rest because CPU usage needs a
+    /// meaningful interval between samples anyway.
+    private let resourceInterval: TimeInterval = 2
+
     /// Claude Code briefly clears its progress report between tool calls, so a tab keeps
     /// counting as working for this long after the last progress report.
     private let workingGrace: TimeInterval = 3
@@ -95,13 +104,30 @@ final class TabSidebarStore: ObservableObject {
 
     private func update() {
         let now = Date()
+        let sampleResources = lastResourceSample.map { now.timeIntervalSince($0) >= resourceInterval } ?? true
+        if sampleResources {
+            lastResourceSample = now
+        }
+
         var next: [ObjectIdentifier: TabInfo] = [:]
         for window in NSApp.windows {
             guard let controller = window.windowController as? TerminalController else { continue }
-            next[ObjectIdentifier(window)] = info(for: window, controller: controller, now: now)
+            let id = ObjectIdentifier(window)
+            if sampleResources {
+                resources[id] = sampleUsage(controller: controller, now: now)
+            }
+
+            var tabInfo = info(for: window, controller: controller, now: now)
+            tabInfo.resources = resources[id]
+            next[id] = tabInfo
+        }
+
+        if sampleResources {
+            processStats.finishRound()
         }
 
         agentStates = agentStates.filter { next[$0.key] != nil }
+        resources = resources.filter { next[$0.key] != nil }
         if next != tabs {
             tabs = next
         }
@@ -168,6 +194,16 @@ final class TabSidebarStore: ObservableObject {
         return info
     }
 
+    /// Usage of everything Ghostty started for the tab's surfaces (the shell and its children).
+    private func sampleUsage(controller: TerminalController, now: Date) -> TabResourceUsage? {
+        let roots = Set(controller.surfaceTree.compactMap { surface -> pid_t? in
+            guard let foreground = surface.surfaceModel?.foregroundPID else { return nil }
+            return ProcessStats.rootPID(fromForeground: pid_t(foreground))
+        })
+        guard !roots.isEmpty else { return nil }
+        return processStats.usage(roots: Array(roots), now: now).rounded()
+    }
+
     private func notifyFinished(agent: TabAgent, info: TabInfo, surface: Ghostty.SurfaceView) {
         let issue = info.issue.map { "\($0.identifier) \($0.title)" } ?? info.issueKey
         let body = [issue, info.repoName, info.branch]
@@ -199,32 +235,17 @@ final class TabSidebarStore: ObservableObject {
             }
 
             if depth < 4 {
-                queue.append(contentsOf: childPIDs(of: pid).map { ($0, depth + 1) })
+                queue.append(contentsOf: ProcessStats.childPIDs(of: pid).map { ($0, depth + 1) })
             }
         }
 
         return nil
     }
 
-    private static func childPIDs(of pid: pid_t) -> [pid_t] {
-        var buffer = [pid_t](repeating: 0, count: 64)
-        let result = buffer.withUnsafeMutableBytes { bytes in
-            proc_listchildpids(pid, bytes.baseAddress, Int32(bytes.count))
-        }
-        guard result > 0 else { return [] }
-
-        // Depending on the macOS version the result is a count or a byte size, so read
-        // at most the whole buffer and drop the unused zero entries.
-        return buffer.prefix(min(Int(result), buffer.count)).filter { $0 > 0 }
-    }
-
     private static func agent(forPID pid: pid_t) -> TabAgent? {
-        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
-
         // Claude Code installs versioned binaries such as ~/.local/share/claude/versions/2.1.0,
         // so the process name alone is just a version number.
-        let path = String(cString: buffer).lowercased()
+        guard let path = ProcessStats.path(pid)?.lowercased() else { return nil }
         if path.contains("/claude/versions/") || path.hasSuffix("/claude") {
             return .claude
         }

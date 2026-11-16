@@ -379,6 +379,22 @@ private struct TabCard: View {
 
     @ViewBuilder
     private var statusRow: some View {
+        if tab.agent != nil || tab.resources != nil {
+            HStack(spacing: 5) {
+                agentStatus
+
+                Spacer(minLength: 4)
+
+                if let resources = tab.resources {
+                    TabResourceLabel(usage: resources)
+                }
+            }
+            .font(.system(size: 11))
+        }
+    }
+
+    @ViewBuilder
+    private var agentStatus: some View {
         if let agent = tab.agent {
             HStack(spacing: 5) {
                 if tab.isWorking {
@@ -410,6 +426,50 @@ private struct TabCard: View {
         if tab.needsAttention { return Color.accentColor.opacity(0.7) }
         if isSelected { return Color.primary.opacity(0.18) }
         return Color.primary.opacity(0.06)
+    }
+}
+
+/// Memory and CPU used by the processes in a tab. Turns orange and then red when a tab
+/// gets heavy, with the heaviest processes in the tooltip.
+private struct TabResourceLabel: View {
+    let usage: TabResourceUsage
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(Self.format(usage.memory))
+                .foregroundStyle(memoryColor)
+            Text("\(Int(usage.cpu))%")
+                .foregroundStyle(cpuColor)
+        }
+        .font(.system(size: 10, design: .monospaced))
+        .help(tooltip)
+    }
+
+    private var memoryColor: Color {
+        let gigabyte: UInt64 = 1024 * 1024 * 1024
+        if usage.memory >= 4 * gigabyte { return .red }
+        if usage.memory >= 2 * gigabyte { return .orange }
+        return .secondary
+    }
+
+    private var cpuColor: Color {
+        if usage.cpu >= 200 { return .red }
+        if usage.cpu >= 80 { return .orange }
+        return .secondary
+    }
+
+    private var tooltip: String {
+        let header = "Memory \(Self.format(usage.memory)) · CPU \(Int(usage.cpu))%"
+        let lines = usage.top.map { "\($0.name)  \(Self.format($0.memory))  \(Int($0.cpu))%" }
+        return ([header] + lines).joined(separator: "\n")
+    }
+
+    static func format(_ bytes: UInt64) -> String {
+        let megabytes = Double(bytes) / 1024 / 1024
+        if megabytes < 1024 {
+            return "\(Int(megabytes.rounded())) MB"
+        }
+        return String(format: "%.1f GB", megabytes / 1024)
     }
 }
 
