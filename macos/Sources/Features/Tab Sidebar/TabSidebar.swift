@@ -63,12 +63,21 @@ class TabSidebarModel: ObservableObject {
     /// removed, reordered or selected.
     static func setNeedsRefresh() {
         TabSidebarStore.shared.setNeedsUpdate()
+        refreshAll()
+    }
+
+    /// Re-reads the selection of every window's sidebar right away. Switching tabs
+    /// changes nothing in the tab metadata, so this can't wait for the store to publish.
+    static func refreshAll() {
+        for window in NSApp.windows {
+            (window.windowController as? TerminalController)?.tabSidebar.refresh()
+        }
     }
 
     // MARK: Per-window state
 
     @Published private(set) var tabs: [TabInfo] = []
-    @Published private(set) var selectedID: ObjectIdentifier?
+    @Published fileprivate(set) var selectedID: ObjectIdentifier?
     @Published private(set) var isGrouped: Bool = TabSidebarModel.isGrouped
     @Published private(set) var collapsed: Set<String> = TabSidebarModel.collapsed
     @Published var query: String = ""
@@ -83,6 +92,11 @@ class TabSidebarModel: ObservableObject {
     }
 
     private var cancellables: Set<AnyCancellable> = []
+
+    /// Observes the tab group's selected window so the highlight follows tab switches
+    /// (clicks, ⌘1-9, ⌘⇧[ / ]) in the same run loop turn.
+    private var selectionObservation: NSKeyValueObservation?
+    private weak var observedTabGroup: NSWindowTabGroup?
 
     init() {
         TabSidebarStore.shared.$tabs
@@ -123,12 +137,26 @@ class TabSidebarModel: ObservableObject {
             tabs = next
         }
 
+        updateSelection()
+        observeSelection()
+        syncNativeTabBar()
+    }
+
+    private func updateSelection() {
+        guard let window else { return }
         let selected = ObjectIdentifier(window.tabGroup?.selectedWindow ?? window)
         if selected != selectedID {
             selectedID = selected
         }
+    }
 
-        syncNativeTabBar()
+    private func observeSelection() {
+        let tabGroup = window?.tabGroup
+        guard tabGroup !== observedTabGroup else { return }
+        observedTabGroup = tabGroup
+        selectionObservation = tabGroup?.observe(\.selectedWindow, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateSelection() }
+        }
     }
 
     /// The sidebar replaces the native tab bar, so collapse the tab bar accessory while
@@ -217,6 +245,13 @@ class TabSidebarModel: ObservableObject {
 
     func select(_ id: ObjectIdentifier) {
         guard let target = window(for: id) else { return }
+
+        // Move the highlight in every copy of the sidebar before switching, so the
+        // window that appears already shows itself as selected.
+        for groupWindow in groupWindows {
+            (groupWindow.windowController as? TerminalController)?.tabSidebar.selectedID = id
+        }
+
         target.tabGroup?.selectedWindow = target
         target.makeKeyAndOrderFront(nil)
     }

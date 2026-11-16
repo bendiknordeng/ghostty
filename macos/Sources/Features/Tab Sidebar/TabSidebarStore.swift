@@ -107,7 +107,7 @@ final class TabSidebarStore: ObservableObject {
 
     /// Re-reads every tab right away instead of waiting for the next poll.
     func setNeedsUpdate() {
-        Task { @MainActor [weak self] in self?.update() }
+        update()
     }
 
     private func update() {
