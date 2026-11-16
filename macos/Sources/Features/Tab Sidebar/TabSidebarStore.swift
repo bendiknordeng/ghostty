@@ -31,6 +31,12 @@ struct TabInfo: Equatable, Identifiable {
     var issue: LinearIssue?
     var resources: TabResourceUsage?
 
+    /// The linked git worktree the tab works in, by folder name.
+    var worktree: String?
+
+    /// Lines added and removed compared with the default branch.
+    var diff: GitDiffSummary?
+
     /// The pwd with the home directory shortened to `~`.
     var displayPwd: String? {
         guard let pwd else { return nil }
@@ -43,7 +49,7 @@ struct TabInfo: Equatable, Identifiable {
     func matches(_ query: String) -> Bool {
         let query = query.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return true }
-        return [title, pwd, branch, repoName, issueKey, issue?.title, issue?.project?.name, agent?.name]
+        return [title, pwd, branch, worktree, repoName, issueKey, issue?.title, issue?.project?.name, agent?.name]
             .compactMap { $0 }
             .contains { $0.localizedCaseInsensitiveContains(query) }
     }
@@ -74,6 +80,9 @@ final class TabSidebarStore: ObservableObject {
 
     private let processStats = ProcessStats()
     private var resources: [ObjectIdentifier: TabResourceUsage] = [:]
+
+    /// The linked worktree each tab's processes run in, sampled with the resources.
+    private var activeWorktrees: [ObjectIdentifier: String] = [:]
     private var lastResourceSample: Date?
 
     /// Process trees are walked less often than the rest because CPU usage needs a
@@ -97,6 +106,7 @@ final class TabSidebarStore: ObservableObject {
         LinearClient.shared.onUpdate = { [weak self] in
             MainActor.assumeIsolated { self?.update() }
         }
+        GitDiffStats.shared.onUpdate = { [weak self] in self?.update() }
 
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
@@ -122,7 +132,7 @@ final class TabSidebarStore: ObservableObject {
             guard let controller = window.windowController as? TerminalController else { continue }
             let id = ObjectIdentifier(window)
             if sampleResources {
-                resources[id] = sampleUsage(controller: controller, now: now)
+                resources[id] = sampleUsage(id: id, controller: controller, now: now)
             }
 
             var tabInfo = info(for: window, controller: controller, now: now)
@@ -136,6 +146,7 @@ final class TabSidebarStore: ObservableObject {
 
         agentStates = agentStates.filter { next[$0.key] != nil }
         resources = resources.filter { next[$0.key] != nil }
+        activeWorktrees = activeWorktrees.filter { next[$0.key] != nil }
         if next != tabs {
             tabs = next
         }
@@ -206,9 +217,22 @@ final class TabSidebarStore: ObservableObject {
         let id = ObjectIdentifier(window)
         let surfaces = Array(controller.surfaceTree)
         let focused = controller.focusedSurface ?? surfaces.first
-        let pwd = focused?.pwd
-        let git = pwd.flatMap(GitInfo.lookup)
         let rawTitle = window.title
+
+        // Agents often work in a linked worktree while the shell stays in the main
+        // checkout, so prefer the worktree their processes run in, then one named after
+        // the tab's issue.
+        let shellPwd = focused?.pwd
+        let shellGit = shellPwd.flatMap(GitInfo.lookup)
+        let workRoot: String?
+        if shellGit?.isLinkedWorktree == true {
+            workRoot = nil
+        } else {
+            let shellIssueKey = LinearClient.identifier(in: [rawTitle, shellGit?.branch, shellPwd])
+            workRoot = activeWorktrees[id] ?? Self.worktree(matching: shellIssueKey, in: shellGit)
+        }
+        let pwd = workRoot ?? shellPwd
+        let git = workRoot.flatMap(GitInfo.lookup) ?? shellGit
 
         let agent = surfaces.lazy.compactMap(Self.agent(for:)).first ?? Self.agent(fromTitle: rawTitle)
         let reportsProgress = surfaces.contains { surface in
@@ -240,7 +264,9 @@ final class TabSidebarStore: ObservableObject {
             isWorking: isWorking,
             needsAttention: false,
             issueKey: issueKey,
-            issue: issueKey.flatMap { LinearClient.shared.issue($0) })
+            issue: issueKey.flatMap { LinearClient.shared.issue($0) },
+            worktree: git?.isLinkedWorktree == true ? git?.worktreeName : nil,
+            diff: git.flatMap { GitDiffStats.shared.summary(for: $0.root) })
 
         if state.wasWorking && !isWorking {
             let turnLength = state.workStartedAt.map { now.timeIntervalSince($0) } ?? 0
@@ -267,13 +293,42 @@ final class TabSidebarStore: ObservableObject {
     }
 
     /// Usage of everything Ghostty started for the tab's surfaces (the shell and its children).
-    private func sampleUsage(controller: TerminalController, now: Date) -> TabResourceUsage? {
+    /// Also records which linked worktree those processes work in.
+    private func sampleUsage(id: ObjectIdentifier, controller: TerminalController, now: Date) -> TabResourceUsage? {
         let roots = Set(controller.surfaceTree.compactMap { surface -> pid_t? in
             guard let foreground = surface.surfaceModel?.foregroundPID else { return nil }
             return ProcessStats.rootPID(fromForeground: pid_t(foreground))
         })
-        guard !roots.isEmpty else { return nil }
+        guard !roots.isEmpty else {
+            activeWorktrees[id] = nil
+            return nil
+        }
+
+        activeWorktrees[id] = Self.activeWorktree(roots: Array(roots))
         return processStats.usage(roots: Array(roots), now: now).rounded()
+    }
+
+    /// The linked worktree most of the tab's processes run in, if any.
+    private static func activeWorktree(roots: [pid_t]) -> String? {
+        var counts: [String: Int] = [:]
+        for pid in ProcessStats.descendants(of: roots) {
+            guard let cwd = ProcessStats.cwd(pid),
+                  let git = GitInfo.lookup(cwd),
+                  git.isLinkedWorktree else { continue }
+            counts[git.root, default: 0] += 1
+        }
+
+        return counts.max { $0.value < $1.value }?.key
+    }
+
+    /// A linked worktree of the repository whose folder or branch names the issue.
+    private static func worktree(matching issueKey: String?, in git: GitInfo.Result?) -> String? {
+        guard let issueKey, let git else { return nil }
+        let key = issueKey.lowercased()
+        return GitInfo.worktrees(commonGitDir: git.commonGitDir).first { path in
+            URL(fileURLWithPath: path).lastPathComponent.lowercased().contains(key)
+                || (GitInfo.lookup(path)?.branch?.lowercased().contains(key) ?? false)
+        }
     }
 
     private func notifyFinished(agent: TabAgent, info: TabInfo, surface: Ghostty.SurfaceView) {

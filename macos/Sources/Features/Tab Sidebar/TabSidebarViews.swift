@@ -268,6 +268,15 @@ private struct TabCard: View {
     @State private var isHovering = false
 
     private var isSelected: Bool { model.selectedID == tab.id }
+
+    /// Under its issue group the issue key is already shown, so drop it from the title
+    /// (`edda work` names sessions "PRO-1234 Title").
+    private var displayTitle: String {
+        guard !showsIssue, let key = tab.issueKey,
+              tab.title.uppercased().hasPrefix(key) else { return tab.title }
+        let rest = tab.title.dropFirst(key.count).drop { " -–—:·".contains($0) }
+        return rest.isEmpty ? tab.title : String(rest)
+    }
     private var isDragged: Bool { model.drag?.id == tab.id }
 
     var body: some View {
@@ -278,7 +287,7 @@ private struct TabCard: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(tab.title)
+                    Text(displayTitle)
                         .font(.system(size: 12, weight: tab.needsAttention ? .bold : .medium, design: .monospaced))
                         .foregroundStyle(tab.needsAttention || isSelected ? Color.primary : Color.primary.opacity(0.85))
                         .lineLimit(1)
@@ -369,9 +378,21 @@ private struct TabCard: View {
     @ViewBuilder
     private var metadataRow: some View {
         let issueKey = showsIssue ? tab.issueKey : nil
-        if tab.branch != nil || issueKey != nil {
+        if tab.branch != nil || issueKey != nil || tab.worktree != nil || tab.diff != nil {
             HStack(spacing: 6) {
-                if let branch = tab.branch {
+                if let worktree = tab.worktree {
+                    HStack(spacing: 3) {
+                        Image(systemName: "square.on.square")
+                            .font(.system(size: 9))
+                        Text(worktree)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .help("Worktree \(tab.pwd ?? worktree)")
+                }
+
+                // In a worktree named after its branch the branch adds nothing.
+                if let branch = tab.branch, branch != tab.worktree {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.triangle.branch")
                             .font(.system(size: 9))
@@ -379,6 +400,7 @@ private struct TabCard: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
+                    .layoutPriority(-1)
                 }
 
                 if let issueKey {
@@ -390,6 +412,12 @@ private struct TabCard: View {
                             RoundedRectangle(cornerRadius: 3)
                                 .fill((Color(linearHex: tab.issue?.stateColor) ?? .secondary).opacity(0.2)))
                         .help(tab.issue.map { "\($0.title)\n\($0.stateName)" } ?? issueKey)
+                }
+
+                Spacer(minLength: 4)
+
+                if let diff = tab.diff, diff.added > 0 || diff.removed > 0 {
+                    TabDiffLabel(diff: diff)
                 }
             }
             .font(.system(size: 11))
@@ -447,6 +475,22 @@ private struct TabCardFramesKey: PreferenceKey {
 
     static func reduce(value: inout [ObjectIdentifier: CGRect], nextValue: () -> [ObjectIdentifier: CGRect]) {
         value.merge(nextValue()) { $1 }
+    }
+}
+
+/// Net lines added and removed compared with the default branch, like a PR header.
+private struct TabDiffLabel: View {
+    let diff: GitDiffSummary
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("+\(diff.added)")
+                .foregroundStyle(Color.green)
+            Text("−\(diff.removed)")
+                .foregroundStyle(Color.red)
+        }
+        .font(.system(size: 10, weight: .medium, design: .monospaced))
+        .help("\(diff.added) lines added, \(diff.removed) removed compared with the default branch")
     }
 }
 

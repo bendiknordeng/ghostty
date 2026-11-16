@@ -130,6 +130,18 @@ final class ProcessStats {
         return result
     }
 
+    /// The current working directory of a process (only readable for our own processes).
+    static func cwd(_ pid: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
+        let path = withUnsafeBytes(of: info.pvi_cdir.vip_path) { bytes in
+            String(bytes: bytes.prefix { $0 != 0 }, encoding: .utf8)
+        }
+        guard let path, !path.isEmpty else { return nil }
+        return path
+    }
+
     static func path(_ pid: pid_t) -> String? {
         var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
