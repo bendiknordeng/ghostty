@@ -429,8 +429,8 @@ private struct TabCard: View {
     }
 }
 
-/// Memory and CPU used by the processes in a tab. Turns orange and then red when a tab
-/// gets heavy, with the heaviest processes in the tooltip.
+/// Memory and CPU used by the processes in a tab, with CPU as a share of the whole Mac.
+/// Turns orange and then red when a tab gets heavy, with the heaviest processes in the tooltip.
 private struct TabResourceLabel: View {
     let usage: TabResourceUsage
 
@@ -438,7 +438,7 @@ private struct TabResourceLabel: View {
         HStack(spacing: 6) {
             Text(Self.format(usage.memory))
                 .foregroundStyle(memoryColor)
-            Text("\(Int(usage.cpu))%")
+            Text(Self.format(cpu: usage.cpu))
                 .foregroundStyle(cpuColor)
         }
         .font(.system(size: 10, design: .monospaced))
@@ -453,15 +453,19 @@ private struct TabResourceLabel: View {
     }
 
     private var cpuColor: Color {
-        if usage.cpu >= 200 { return .red }
-        if usage.cpu >= 80 { return .orange }
+        if usage.cpu >= 50 { return .red }
+        if usage.cpu >= 25 { return .orange }
         return .secondary
     }
 
     private var tooltip: String {
-        let header = "Memory \(Self.format(usage.memory)) · CPU \(Int(usage.cpu))%"
-        let lines = usage.top.map { "\($0.name)  \(Self.format($0.memory))  \(Int($0.cpu))%" }
+        let header = "Memory \(Self.format(usage.memory)) · CPU \(Self.format(cpu: usage.cpu)) of this Mac"
+        let lines = usage.top.map { "\($0.name)  \(Self.format($0.memory))  \(Self.format(cpu: $0.cpu))" }
         return ([header] + lines).joined(separator: "\n")
+    }
+
+    static func format(cpu: Double) -> String {
+        cpu < 10 ? String(format: "%.1f%%", cpu) : "\(Int(cpu))%"
     }
 
     static func format(_ bytes: UInt64) -> String {

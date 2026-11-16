@@ -12,20 +12,25 @@ struct TabResourceUsage: Equatable {
     /// Physical memory footprint in bytes, as Activity Monitor's "Memory" column.
     var memory: UInt64
 
-    /// CPU usage in percent of one core, so it can exceed 100.
+    /// CPU usage in percent of the whole machine (all cores), from 0 to 100.
     var cpu: Double
 
     /// The heaviest processes by memory.
     var top: [Process]
 
-    /// Rounded to 10 MB and whole percents so tiny fluctuations don't re-render the sidebar.
+    /// Rounded to 10 MB and coarse percents so tiny fluctuations don't re-render the sidebar.
     func rounded() -> TabResourceUsage {
         let step: UInt64 = 10 * 1024 * 1024
         func roundMemory(_ value: UInt64) -> UInt64 { (value + step / 2) / step * step }
+
+        // Usage relative to the whole machine is small, so keep a decimal below 10%.
+        func roundCPU(_ value: Double) -> Double {
+            value < 10 ? (value * 10).rounded() / 10 : value.rounded()
+        }
         return TabResourceUsage(
             memory: roundMemory(memory),
-            cpu: cpu.rounded(),
-            top: top.map { Process(name: $0.name, memory: roundMemory($0.memory), cpu: $0.cpu.rounded()) })
+            cpu: roundCPU(cpu),
+            top: top.map { Process(name: $0.name, memory: roundMemory($0.memory), cpu: roundCPU($0.cpu)) })
     }
 }
 
@@ -38,6 +43,8 @@ final class ProcessStats {
     }
 
     private var previous: [pid_t: Sample] = [:]
+
+    private static let coreCount = Double(max(ProcessInfo.processInfo.activeProcessorCount, 1))
     private var sampledThisRound: Set<pid_t> = []
 
     /// `proc_pid_rusage` reports CPU time in Mach absolute time units, which are not
@@ -59,7 +66,7 @@ final class ProcessStats {
             if let last = previous[pid], cpuTime >= last.cpuNanoseconds {
                 let wall = now.timeIntervalSince(last.date)
                 if wall > 0 {
-                    cpu = Double(cpuTime - last.cpuNanoseconds) / 1e9 / wall * 100
+                    cpu = Double(cpuTime - last.cpuNanoseconds) / 1e9 / wall * 100 / Self.coreCount
                 }
             }
             previous[pid] = Sample(cpuNanoseconds: cpuTime, date: now)
