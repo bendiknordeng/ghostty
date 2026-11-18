@@ -481,6 +481,7 @@ struct TabSidebarLayout<Content: View>: View {
         HStack(spacing: 0) {
             if frame.isVisible {
                 TabSidebarView(model: model)
+                    .acceptsClicksWhileWindowInactive()
                     .frame(width: frame.width)
                     .overlay(alignment: .trailing) {
                         TabSidebarResizeHandle(frame: frame)
@@ -489,6 +490,17 @@ struct TabSidebarLayout<Content: View>: View {
             }
 
             content
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func acceptsClicksWhileWindowInactive() -> some View {
+        if #available(macOS 15.0, *) {
+            allowsWindowActivationEvents(true)
+        } else {
+            self
         }
     }
 }
