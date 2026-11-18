@@ -20,7 +20,8 @@ struct LinearIssue: Equatable {
 
 /// Looks up Linear issues by identifier (e.g. `PRO-5740`) for the tab sidebar.
 ///
-/// The API key is read from `~/.config/ghostty/linear-api-key`. Without a key every lookup
+/// The API key is read from `~/.config/ghostty/linear-api-key`, or else from the key that
+/// `edda linear connect` saves in `~/.config/edda/linear.json`. Without a key every lookup
 /// returns nil and the sidebar falls back to grouping by repository. Results are cached for
 /// the lifetime of the app and refreshed every few minutes.
 final class LinearClient {
@@ -42,9 +43,8 @@ final class LinearClient {
     /// Called on the main thread whenever a lookup finishes.
     var onUpdate: (() -> Void)?
 
-    private static var apiKeyURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/ghostty/linear-api-key")
+    private static var configURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config")
     }
 
     private var apiKey: String? {
@@ -52,11 +52,28 @@ final class LinearClient {
             return apiKeyCache.key
         }
 
-        let key = (try? String(contentsOf: Self.apiKeyURL, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let usable = (key?.isEmpty ?? true) ? nil : key
-        apiKeyCache = (usable, Date())
-        return usable
+        let key = Self.ghosttyKey() ?? Self.eddaKey()
+        apiKeyCache = (key, Date())
+        return key
+    }
+
+    private static func ghosttyKey() -> String? {
+        let url = configURL.appendingPathComponent("ghostty/linear-api-key")
+        return usable((try? String(contentsOf: url, encoding: .utf8)))
+    }
+
+    private static func eddaKey() -> String? {
+        let url = configURL.appendingPathComponent("edda/linear.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return usable(json["key"] as? String)
+    }
+
+    private static func usable(_ key: String?) -> String? {
+        guard let trimmed = key?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     var isConfigured: Bool { apiKey != nil }

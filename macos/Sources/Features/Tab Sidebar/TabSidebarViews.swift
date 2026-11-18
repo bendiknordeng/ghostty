@@ -227,7 +227,7 @@ private struct TabSidebarIssueNode: View {
                 .foregroundStyle(.secondary)
                 .fixedSize()
 
-            if let title = group.issue?.title {
+            if let title = group.title {
                 Text(title)
                     .font(.system(size: 12))
                     .lineLimit(1)
@@ -281,10 +281,8 @@ private struct TabCard: View {
     /// Under its issue group the issue key is already shown, so drop it from the title
     /// (`edda work` names sessions "PRO-1234 Title").
     private var displayTitle: String {
-        guard !showsIssue, let key = tab.issueKey,
-              tab.title.uppercased().hasPrefix(key) else { return tab.title }
-        let rest = tab.title.dropFirst(key.count).drop { " -–—:·".contains($0) }
-        return rest.isEmpty ? tab.title : String(rest)
+        guard !showsIssue, let rest = tab.titleAfterIssueKey else { return tab.title }
+        return rest
     }
     private var isDragged: Bool { model.drag?.id == tab.id }
 
@@ -576,25 +574,38 @@ private struct TabAvatar: View {
             Circle()
                 .fill(fill)
 
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(agent == nil ? Color.secondary : Color.white)
+            icon
         }
         .frame(width: 26, height: 26)
     }
 
-    private var symbol: String {
+    @ViewBuilder
+    private var icon: some View {
         switch agent {
-        case .claude: "asterisk"
-        case .codex: "chevron.left.forwardslash.chevron.right"
-        case nil: "terminal"
+        case .claude:
+            logo("ClaudeLogo", size: 15)
+        case .codex:
+            logo("CodexLogo", size: 16)
+        case nil:
+            Image(systemName: "terminal")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.secondary)
         }
+    }
+
+    private func logo(_ name: String, size: CGFloat) -> some View {
+        Image(name)
+            .resizable()
+            .renderingMode(.template)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size, height: size)
+            .foregroundStyle(.white)
     }
 
     private var fill: Color {
         switch agent {
         case .claude: claudeColor
-        case .codex: Color(red: 0.2, green: 0.2, blue: 0.22)
+        case .codex: Color.black
         case nil: Color.primary.opacity(0.08)
         }
     }

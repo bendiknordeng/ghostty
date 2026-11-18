@@ -46,6 +46,14 @@ struct TabInfo: Equatable, Identifiable {
         return pwd
     }
 
+    /// The title after a leading issue key (`edda work` names sessions "PRO-1234 Title"),
+    /// or nil when the title does not start with the tab's issue key.
+    var titleAfterIssueKey: String? {
+        guard let key = issueKey, title.uppercased().hasPrefix(key) else { return nil }
+        let rest = title.dropFirst(key.count).drop { " -–—:·".contains($0) }
+        return rest.isEmpty ? nil : String(rest)
+    }
+
     func matches(_ query: String) -> Bool {
         let query = query.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return true }

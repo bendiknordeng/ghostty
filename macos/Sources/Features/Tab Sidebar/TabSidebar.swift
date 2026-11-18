@@ -435,6 +435,12 @@ struct TabSidebarSection: Identifiable {
         let issueKey: String?
         let issue: LinearIssue?
         var tabs: [TabInfo]
+
+        /// The issue title from Linear, or from a tab titled after the issue while Linear
+        /// is unreachable or not configured.
+        var title: String? {
+            issue?.title ?? tabs.lazy.compactMap(\.titleAfterIssueKey).first
+        }
     }
 
     let id: String
