@@ -181,17 +181,9 @@ private struct TabSidebarSectionView: View {
 
     var body: some View {
         TreeNode(model: model, id: section.id) {
-            if section.isLinearProject {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(section.color ?? .secondary)
-                    .frame(width: 10, height: 10)
-            } else {
-                Image(systemName: "folder")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            TabSidebarSectionIcon(kind: section.kind)
 
-            Text(section.title)
+            Text(section.kind.title)
                 .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
 
@@ -209,6 +201,30 @@ private struct TabSidebarSectionView: View {
                 }
             }
         }
+    }
+}
+
+private struct TabSidebarSectionIcon: View {
+    let kind: TabSidebarSection.Kind
+
+    var body: some View {
+        switch kind {
+        case .project(let project):
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color(linearHex: project.color) ?? .secondary)
+                .frame(width: 10, height: 10)
+        case .noProject:
+            symbol("square.dashed")
+        case .noIssue:
+            symbol("terminal")
+        }
+    }
+
+    private func symbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .frame(width: 10, height: 10)
     }
 }
 
@@ -597,7 +613,7 @@ private struct TabAvatar: View {
         Image(name)
             .resizable()
             .renderingMode(.template)
-            .aspectRatio(contentMode: .fit)
+            .scaledToFit()
             .frame(width: size, height: size)
             .foregroundStyle(.white)
     }

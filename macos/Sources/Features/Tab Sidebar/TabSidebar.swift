@@ -243,29 +243,22 @@ class TabSidebarModel: ObservableObject {
         }
     }
 
-    /// Tabs grouped by Linear project (or repository) and then by Linear issue.
+    /// Tabs grouped by Linear project and then by Linear issue. Issues without a project
+    /// share a "No project" section, and tabs without an issue come last on their own.
     var sections: [TabSidebarSection] {
         var sections: [TabSidebarSection] = []
         for tab in filteredTabs {
-            let sectionID = tab.issue?.project.map { "project:\($0.id)" }
-                ?? tab.repoName.map { "repo:\($0)" }
-                ?? "other"
-
-            var index = sections.firstIndex { $0.id == sectionID }
-            if index == nil {
-                sections.append(TabSidebarSection(
-                    id: sectionID,
-                    title: tab.issue?.project?.name ?? tab.repoName ?? "Other",
-                    color: Color(linearHex: tab.issue?.project?.color),
-                    isLinearProject: tab.issue?.project != nil,
-                    groups: []))
-                index = sections.count - 1
-            }
-
-            sections[index!].insert(tab)
+            let kind = TabSidebarSection.Kind(tab)
+            let index = sections.firstIndex { $0.id == kind.id } ?? {
+                sections.append(TabSidebarSection(kind: kind, groups: []))
+                return sections.count - 1
+            }()
+            sections[index].insert(tab)
         }
 
-        return sections
+        return sections.enumerated()
+            .sorted { ($0.element.kind.order, $0.offset) < ($1.element.kind.order, $1.offset) }
+            .map(\.element)
     }
 
     func isCollapsed(_ id: String) -> Bool {
@@ -427,7 +420,7 @@ final class TabSidebarFrame: ObservableObject {
     }
 }
 
-/// A project (or repository) in the grouped sidebar.
+/// A section of the grouped sidebar.
 struct TabSidebarSection: Identifiable {
     /// Tabs that share a Linear issue, or a single tab without one.
     struct Group: Identifiable {
@@ -443,12 +436,54 @@ struct TabSidebarSection: Identifiable {
         }
     }
 
-    let id: String
-    let title: String
-    let color: Color?
-    let isLinearProject: Bool
+    /// What a section collects: one Linear project, issues without a project, or tabs
+    /// without an issue.
+    enum Kind {
+        case project(LinearIssue.Project)
+        case noProject
+        case noIssue
+
+        init(_ tab: TabInfo) {
+            if let project = tab.issue?.project {
+                self = .project(project)
+            } else if tab.issueKey != nil {
+                self = .noProject
+            } else {
+                self = .noIssue
+            }
+        }
+
+        var id: String {
+            switch self {
+            case .project(let project): "project:\(project.id)"
+            case .noProject: "no-project"
+            case .noIssue: "no-issue"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .project(let project): project.name
+            case .noProject: "No project"
+            case .noIssue: "Other tabs"
+            }
+        }
+
+        /// Projects keep their tab order, followed by issues without a project and then
+        /// tabs without an issue.
+        var order: Int {
+            switch self {
+            case .project: 0
+            case .noProject: 1
+            case .noIssue: 2
+            }
+        }
+    }
+
+    let kind: Kind
     var groups: [Group]
 
+    var id: String { kind.id }
     var tabCount: Int { groups.reduce(0) { $0 + $1.tabs.count } }
 
     mutating func insert(_ tab: TabInfo) {

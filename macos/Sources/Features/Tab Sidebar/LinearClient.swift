@@ -22,7 +22,7 @@ struct LinearIssue: Equatable {
 ///
 /// The API key is read from `~/.config/ghostty/linear-api-key`, or else from the key that
 /// `edda linear connect` saves in `~/.config/edda/linear.json`. Without a key every lookup
-/// returns nil and the sidebar falls back to grouping by repository. Results are cached for
+/// returns nil and issue tabs are grouped under "No project". Results are cached for
 /// the lifetime of the app and refreshed every few minutes.
 final class LinearClient {
     static let shared = LinearClient()
